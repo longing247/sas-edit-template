@@ -1,60 +1,150 @@
 /*
-  Compare datasets B, C and D with reference dataset A by VISIT.
+  Reusable macro: compare three datasets against one reference dataset
+  by VISIT and output exceptions to separate datasets.
+
+  Default rule:
+      absolute datetime difference > 24 hours
 
   Assumptions:
-    - A, B, C and D contain VISIT, DATE and TIME.
+    - Each dataset contains the BY, DATE and TIME variables.
     - DATE is a SAS date value.
     - TIME is a SAS time value.
-    - Datasets are sorted by VISIT before the DATA step.
-    - One relevant observation per VISIT per dataset.
-    - A is the reference dataset.
+    - One relevant observation per BY group per dataset.
 
-  Output:
-    OUT_B: observations where B is more than 24 hours from A
-    OUT_C: observations where C is more than 24 hours from A
-    OUT_D: observations where D is more than 24 hours from A
+  Example:
 
-  ABS() means the comparison is in either direction (earlier or later).
+    %compare_datetime(
+        ref=a,
+        cmp1=b,
+        cmp2=c,
+        cmp3=d,
+        out1=out_b,
+        out2=out_c,
+        out3=out_d,
+        by=visit,
+        date=date,
+        time=time,
+        hours=24
+    );
 */
 
-proc sort data=a; by visit; run;
-proc sort data=b; by visit; run;
-proc sort data=c; by visit; run;
-proc sort data=d; by visit; run;
+%macro compare_datetime(
+    ref=,
+    cmp1=,
+    cmp2=,
+    cmp3=,
+    out1=out_cmp1,
+    out2=out_cmp2,
+    out3=out_cmp3,
+    by=visit,
+    date=date,
+    time=time,
+    hours=24
+);
 
-data out_b out_c out_d;
-    merge
-        a(in=ina rename=(date=a_date time=a_time))
-        b(in=inb rename=(date=b_date time=b_time))
-        c(in=inc rename=(date=c_date time=c_time))
-        d(in=ind rename=(date=d_date time=d_time));
-    by visit;
+    /* Sort all input datasets by the comparison key. */
+    proc sort data=&ref out=_ref_sorted;
+        by &by;
+    run;
 
-    /* Only evaluate visits present in reference dataset A. */
-    if ina;
+    proc sort data=&cmp1 out=_cmp1_sorted;
+        by &by;
+    run;
 
-    a_dt = dhms(a_date, 0, 0, a_time);
+    proc sort data=&cmp2 out=_cmp2_sorted;
+        by &by;
+    run;
 
-    /* B vs A */
-    if inb then do;
-        b_dt = dhms(b_date, 0, 0, b_time);
-        if abs(b_dt - a_dt) > 86400 then
-            output out_b;
-    end;
+    proc sort data=&cmp3 out=_cmp3_sorted;
+        by &by;
+    run;
 
-    /* C vs A */
-    if inc then do;
-        c_dt = dhms(c_date, 0, 0, c_time);
-        if abs(c_dt - a_dt) > 86400 then
-            output out_c;
-    end;
+    data &out1 &out2 &out3;
+        merge
+            _ref_sorted(
+                in=inref
+                rename=(&date=ref_date &time=ref_time)
+            )
+            _cmp1_sorted(
+                in=incmp1
+                rename=(&date=cmp1_date &time=cmp1_time)
+            )
+            _cmp2_sorted(
+                in=incmp2
+                rename=(&date=cmp2_date &time=cmp2_time)
+            )
+            _cmp3_sorted(
+                in=incmp3
+                rename=(&date=cmp3_date &time=cmp3_time)
+            );
+        by &by;
 
-    /* D vs A */
-    if ind then do;
-        d_dt = dhms(d_date, 0, 0, d_time);
-        if abs(d_dt - a_dt) > 86400 then
-            output out_d;
-    end;
+        /* Only evaluate groups that exist in the reference dataset. */
+        if inref;
 
-    format a_dt b_dt c_dt d_dt datetime20.;
-run;
+        ref_dt = dhms(ref_date, 0, 0, ref_time);
+
+        /* Compare CMP1 with reference. */
+        if incmp1 and
+           not missing(ref_dt) and
+           not missing(cmp1_date) and
+           not missing(cmp1_time) then do;
+
+            cmp1_dt = dhms(cmp1_date, 0, 0, cmp1_time);
+
+            if abs(cmp1_dt - ref_dt) > (&hours * 60 * 60) then
+                output &out1;
+        end;
+
+        /* Compare CMP2 with reference. */
+        if incmp2 and
+           not missing(ref_dt) and
+           not missing(cmp2_date) and
+           not missing(cmp2_time) then do;
+
+            cmp2_dt = dhms(cmp2_date, 0, 0, cmp2_time);
+
+            if abs(cmp2_dt - ref_dt) > (&hours * 60 * 60) then
+                output &out2;
+        end;
+
+        /* Compare CMP3 with reference. */
+        if incmp3 and
+           not missing(ref_dt) and
+           not missing(cmp3_date) and
+           not missing(cmp3_time) then do;
+
+            cmp3_dt = dhms(cmp3_date, 0, 0, cmp3_time);
+
+            if abs(cmp3_dt - ref_dt) > (&hours * 60 * 60) then
+                output &out3;
+        end;
+
+        format ref_dt cmp1_dt cmp2_dt cmp3_dt datetime20.;
+    run;
+
+    /* Remove temporary sorted datasets. */
+    proc datasets library=work nolist;
+        delete _ref_sorted _cmp1_sorted _cmp2_sorted _cmp3_sorted;
+    quit;
+
+%mend compare_datetime;
+
+
+/*===============================================================*
+ | Example call                                                   |
+ *===============================================================*/
+
+%compare_datetime(
+    ref=a,
+    cmp1=b,
+    cmp2=c,
+    cmp3=d,
+    out1=out_b,
+    out2=out_c,
+    out3=out_d,
+    by=visit,
+    date=date,
+    time=time,
+    hours=24
+);
