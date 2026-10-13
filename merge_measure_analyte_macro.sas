@@ -2,7 +2,7 @@
   Merge dataset A with dataset B using a measure-to-analyte mapping.
 
   A: subject, visit, measure
-  B: subject, visit, analyte, std_measure
+  B: subject, visit, <b_analyte>, std_measure
 
   The MEASURES= and ANALYTES= macro parameters are parallel lists.
   Element i of MEASURES maps to element i of ANALYTES.
@@ -13,13 +13,14 @@
     b=,
     out=,
     measures=,
-    analytes=
+    analytes=,
+    b_analyte=analyte
 );
 
     data _a_mapped;
-        set &a;
-
         length analyte $100;
+        set &a;
+        call missing(analyte);
 
         array measure_map[*] $100 _temporary_ (&measures);
         array analyte_map[*] $100 _temporary_ (&analytes);
@@ -39,7 +40,8 @@
         by subject visit analyte;
     run;
 
-    proc sort data=&b out=_b_sorted;
+    /* Normalize the analyte key name in B without modifying B. */
+    proc sort data=&b(rename=(&b_analyte=analyte)) out=_b_sorted;
         by subject visit analyte;
     run;
 
@@ -77,7 +79,8 @@
     b=work.b,
     out=work.want,
     measures=&measures,
-    analytes=&analytes
+    analytes=&analytes,
+    b_analyte=LBTEST
 );
 
 */
