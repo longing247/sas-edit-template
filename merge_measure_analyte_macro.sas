@@ -1,11 +1,17 @@
 /*
-  Merge dataset A with dataset B using a measure-to-analyte mapping.
+  Convert wide-format measures in A to long format and join to B.
 
-  A: subject, visit, measure
-  B: subject, visit, <b_analyte>, std_measure
+  A: one row per subject/visit, numeric variables ALT AST TBILI etc.
+  B: subject, visit, analyte variable (configurable), std_measure.
 
-  The MEASURES= and ANALYTES= macro parameters are parallel lists.
-  Element i of MEASURES maps to element i of ANALYTES.
+  MEASURES= is a space-separated list of UNQUOTED numeric variable names.
+  ANALYTES= is a space-separated list of QUOTED character labels,
+            in the same order as MEASURES=.
+
+  Output: one row per A measure per subject/visit, with measure_name,
+          measure_value, analyte and matching std_measure from B.
+  Missing matches in B retain the A measure with missing std_measure.
+  Multiple matches in B produce multiple output rows (SQL left join).
 */
 
 %macro merge_measure_analyte(
@@ -17,70 +23,70 @@
     b_analyte=analyte
 );
 
-    data _a_mapped;
-        length analyte $100;
+    %if %superq(a)= or %superq(b)= or %superq(out)= or
+        %superq(measures)= or %superq(analytes)= %then %do;
+        %put ERROR: A=, B=, OUT=, MEASURES= and ANALYTES= are required.;
+        %return;
+    %end;
+
+    data _mma_a_long;
         set &a;
-        call missing(analyte);
+        length measure_name $32 analyte $100;
+        array _mma_values[*] &measures;
+        array _mma_analytes[*] $100 _temporary_ (&analytes);
 
-        array measure_map[*] $100 _temporary_ (&measures);
-        array analyte_map[*] $100 _temporary_ (&analytes);
-
-        do _i = 1 to dim(measure_map);
-            if strip(upcase(measure)) =
-               strip(upcase(measure_map[_i])) then do;
-                analyte = analyte_map[_i];
-                leave;
-            end;
+        if dim(_mma_values) ne dim(_mma_analytes) then do;
+            putlog 'ERROR: MEASURES and ANALYTES must have the same number of elements.';
+            stop;
         end;
 
-        drop _i;
+        do _mma_i = 1 to dim(_mma_values);
+            measure_name = vname(_mma_values[_mma_i]);
+            measure_value = _mma_values[_mma_i];
+            analyte = _mma_analytes[_mma_i];
+            output;
+        end;
+
+        keep subject visit measure_name measure_value analyte;
     run;
 
-    proc sort data=_a_mapped;
-        by subject visit analyte;
-    run;
+    %if &syserr > 4 %then %do;
+        %put ERROR: Unable to create the mapped long dataset.;
+        %return;
+    %end;
 
-    /* Normalize the analyte key name in B without modifying B. */
-    proc sort data=&b(rename=(&b_analyte=analyte)) out=_b_sorted;
-        by subject visit analyte;
-    run;
-
-    data &out;
-        merge _a_mapped(in=ina)
-              _b_sorted(
-                  keep=subject visit analyte std_measure
-              );
-        by subject visit analyte;
-
-        if ina;
-    run;
-
-    proc datasets library=work nolist;
-        delete _a_mapped _b_sorted;
+    proc sql;
+        create table &out as
+        select a.subject,
+               a.visit,
+               a.measure_name,
+               a.measure_value,
+               a.analyte,
+               b.std_measure
+        from _mma_a_long as a
+        left join &b as b
+          on a.subject = b.subject
+         and a.visit = b.visit
+         and upcase(strip(a.analyte)) =
+             upcase(strip(b.&b_analyte))
+        ;
     quit;
 
-%mend;
+    proc datasets library=work nolist;
+        delete _mma_a_long;
+    quit;
 
+%mend merge_measure_analyte;
 
-/* Example
-
-%let measures =
-    'ALT'
-    'AST'
-    'TBILI';
-
-%let analytes =
-    'ALANINE AMINOTRANSFERASE'
-    'ASPARTATE AMINOTRANSFERASE'
-    'BILIRUBIN';
-
+/* Example:
 %merge_measure_analyte(
     a=work.a,
     b=work.b,
     out=work.want,
-    measures=&measures,
-    analytes=&analytes,
+    measures=ALT AST TBILI,
+    analytes='ALANINE AMINOTRANSFERASE'
+             'ASPARTATE AMINOTRANSFERASE'
+             'BILIRUBIN',
     b_analyte=LBTEST
 );
-
 */
