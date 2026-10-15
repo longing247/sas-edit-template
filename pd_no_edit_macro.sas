@@ -1,16 +1,16 @@
 /*
  * Validate each status variable independently (without transposing).
  * Rule 1: consecutive 'N' values within SUBJECT, both input lists.
- * Rule 2: strictly >40% 'N' among all rows, procedure list only.
+ * Rule 2: strictly >40% 'N' visits per subject, procedure list only; Y wins within visit.
  * Inputs: CPDRV.x<dataset>; ordered by SUBJECT InstanceName FolderSeq.
  * SUBJECT is assumed character; EDIT must be an assigned output libref.
  */
 %macro pd_no_edit(p_ds=, a_ds=, edit=, edit1=, edit2=);
     %local all_ds n_all i j ds ds_prefix varlist nvars stat_var
-           is_proc list1 list2;
+           is_proc list1 list2 k;
 
     %let all_ds=&p_ds &a_ds;
-    %let n_all=%sysfunc(countw(%superq(all_ds), %str( )));
+    %let n_all=%sysfunc(countw(&all_ds));
     %let list1=;
     %let list2=;
 
@@ -20,7 +20,7 @@
     %end;
 
     %do i=1 %to &n_all;
-        %let ds=%scan(%superq(all_ds), &i, %str( ));
+        %let ds=%scan(&all_ds, &i);
         %let ds_prefix=%scan(&ds, 1, _);
         %let varlist=;
 
@@ -34,14 +34,14 @@
         run;
 
         proc sql noprint;
-            select nliteral(name) into :varlist separated by ' '
+            select name into :varlist separated by ' '
             from work._pd_vars
             where type=2
               and prxmatch("/^&ds_prefix.STAT(_.*)?_STD$/i", strip(name)) > 0
             order by varnum;
         quit;
 
-        %let nvars=%sysfunc(countw(%superq(varlist), %str( )));
+        %let nvars=%sysfunc(countw(&varlist));
         %if &nvars = 0 %then %do;
             %put NOTE: No matching status variables in &ds..;
         %end;
@@ -50,11 +50,15 @@
                 by SUBJECT InstanceName FolderSeq;
             run;
 
-            %let is_proc=%sysfunc(findw(%superq(p_ds), %superq(ds), %str( )));
+            %let is_proc=0;
+            %do k=1 %to %sysfunc(countw(&p_ds));
+                %if %upcase(&ds) = %upcase(%scan(&p_ds, &k)) %then
+                    %let is_proc=1;
+            %end;
 
             /* Macro expansion produces an independent LAG queue per variable. */
             %do j=1 %to &nvars;
-                %let stat_var=%scan(%superq(varlist), &j, %str( ));
+                %let stat_var=%scan(&varlist, &j);
 
                 data work._pd_e1_&i._&j;
                     set work._pd_sorted;
@@ -78,17 +82,30 @@
                 %let list1=&list1 work._pd_e1_&i._&j;
 
                 %if &is_proc > 0 %then %do;
+                    /* Y sorts ahead of N; retain one row per subject/visit. */
+                    proc sort data=work._pd_sorted
+                              out=work._pd_visit_&i._&j;
+                        by SUBJECT InstanceName descending &stat_var;
+                    run;
+
+                    data work._pd_visit_&i._&j;
+                        set work._pd_visit_&i._&j;
+                        by SUBJECT InstanceName;
+                        if first.InstanceName;
+                    run;
+
                     proc sql;
                         create table work._pd_e2_&i._&j as
                         select "&ds" as source_ds length=32,
-                               "%sysfunc(dequote(%superq(stat_var)))"
-                                   as variable length=32,
+                               SUBJECT,
+                               "&stat_var" as variable length=32,
                                "N_OVER_40_PERCENT" as rule length=40,
                                count(*) as total,
                                sum(upcase(strip(&stat_var))='N') as n_count,
                                calculated n_count / calculated total * 100
                                    as pct_n
-                        from work._pd_sorted
+                        from work._pd_visit_&i._&j
+                        group by SUBJECT
                         having calculated pct_n > 40;
                     quit;
                     %let list2=&list2 work._pd_e2_&i._&j;
