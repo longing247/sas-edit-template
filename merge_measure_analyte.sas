@@ -14,9 +14,9 @@
     prefix=LBRES_
 );
     %local n n_analytes nkeys i j measure analyte code key;
-    %let n=%sysfunc(countw(%superq(measures),%str( )));
-    %let n_analytes=%sysfunc(countw(%superq(analytes),%str( )));
-    %let nkeys=%sysfunc(countw(%superq(keys),%str( )));
+    %let n=%sysfunc(countw(&measures));
+    %let n_analytes=%sysfunc(countw(&analytes));
+    %let nkeys=%sysfunc(countw(&keys));
 
     %if &n=0 or &n ne &n_analytes or &nkeys=0 %then %do;
         %put ERROR: Invalid measures, analytes or keys lists.;
