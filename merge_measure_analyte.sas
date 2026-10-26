@@ -7,23 +7,21 @@
    Missing/unrecognized conversions yield missing _STD and a status. */
 %macro merge_measure_analyte(
     data_a=, data_b=, out=,
-    measures=, analytes=,
+    measures=, analytes=, units=,
     keys=SUBJECT VISIT,
     analyte_var=ANALYTE,
     low_var=LAB_LOW,
     high_var=LAB_HIGH,
     prefix=LBRES_,
-    unit_prefix=LBUNIT_,
     ref_unit_var=UNIT,
-    conversion_ds=
 );
-    %local n n_analytes nkeys i j measure analyte code key dsid rc
-           required;
+    %local n n_analytes n_units nkeys i j measure analyte unit code key dsid rc required;
     %let n=%sysfunc(countw(&measures));
     %let n_analytes=%sysfunc(countw(&analytes));
+    %let n_units=%sysfunc(countw(&units));
     %let nkeys=%sysfunc(countw(&keys));
 
-    %if &n=0 or &n ne &n_analytes or &nkeys=0 %then %do;
+    %if &n=0 or &n ne &n_analytes or &n ne &n_units or &nkeys=0 %then %do;
         %put ERROR: Invalid parallel lists or keys.;
         %return;
     %end;
@@ -31,13 +29,6 @@
         %put ERROR: Input dataset A or B does not exist.;
         %return;
     %end;
-    %if %length(%superq(conversion_ds)) %then %do;
-        %if not %sysfunc(exist(&conversion_ds)) %then %do;
-            %put ERROR: Conversion dataset does not exist.;
-            %return;
-        %end;
-    %end;
-
     /* Check expected source variables before generating SQL. */
     %let dsid=%sysfunc(open(&data_a,i));
     %if &dsid=0 %then %do;
@@ -46,6 +37,7 @@
     %end;
     %do i=1 %to &n;
         %let measure=%scan(&measures,&i);
+        %let unit=%scan(&units,&i);
         %if %length(&measure)<=%length(&prefix) %then %do;
             %put ERROR: Invalid measure &measure..;
             %let rc=%sysfunc(close(&dsid));
@@ -57,14 +49,14 @@
             %return;
         %end;
         %let code=%substr(&measure,%eval(%length(&prefix)+1));
-        %if %length(&code)>27 %then %do;
+        %if %length(&code)>25 %then %do;
             %put ERROR: &code is too long for generated variable names.;
             %let rc=%sysfunc(close(&dsid));
             %return;
         %end;
         %if %sysfunc(varnum(&dsid,&measure))=0 or
-            %sysfunc(varnum(&dsid,&unit_prefix.&code))=0 %then %do;
-            %put ERROR: Missing &measure or &unit_prefix.&code in A.;
+            %sysfunc(varnum(&dsid,&unit))=0 %then %do;
+            %put ERROR: Missing &measure or &unit in A.;
             %let rc=%sysfunc(close(&dsid));
             %return;
         %end;
@@ -73,8 +65,8 @@
             %let rc=%sysfunc(close(&dsid));
             %return;
         %end;
-        %if %sysfunc(vartype(&dsid,%sysfunc(varnum(&dsid,&unit_prefix.&code)))) ne C %then %do;
-            %put ERROR: &unit_prefix.&code must be character.;
+        %if %sysfunc(vartype(&dsid,%sysfunc(varnum(&dsid,&unit)))) ne C %then %do;
+            %put ERROR: &unit must be character.;
             %let rc=%sysfunc(close(&dsid));
             %return;
         %end;
@@ -114,90 +106,61 @@
     %end;
     %let rc=%sysfunc(close(&dsid));
 
-    /* Reference values and units are joined per analyte. */
+    /* Join reference data only; perform conversions in the DATA step. */
     proc sql;
         create table &out as
         select a.*
         %do i=1 %to &n;
             %let measure=%scan(&measures,&i);
-            %let analyte=%scan(&analytes,&i);
             %let code=%substr(&measure,%eval(%length(&prefix)+1));
             , b&i..&low_var as &code._LOW
             , b&i..&high_var as &code._HIGH
             , b&i..&ref_unit_var as &code._UNIT
-            , case
-                when missing(a.&measure) then .
-                when missing(b&i..&ref_unit_var) or
-                     missing(a.&unit_prefix.&code) then .
-                when upcase(strip(a.&unit_prefix.&code)) =
-                     upcase(strip(b&i..&ref_unit_var))
-                     then a.&measure
-                %if %length(%superq(conversion_ds)) %then %do;
-                when not missing(c&i..FACTOR)
-                     then a.&measure*c&i..FACTOR + coalesce(c&i..OFFSET,0)
-                %end;
-                else .
-              end as &code._STD
-            , case
-                when missing(a.&measure) then 'MISSING_VALUE'
-                when missing(b&i..&ref_unit_var) then 'NO_REFERENCE'
-                when missing(a.&unit_prefix.&code) then 'NO_SOURCE_UNIT'
-                when upcase(strip(a.&unit_prefix.&code)) =
-                     upcase(strip(b&i..&ref_unit_var)) then 'MATCH'
-                %if %length(%superq(conversion_ds)) %then %do;
-                when not missing(c&i..FACTOR) then 'CONVERTED'
-                %end;
-                else 'NO_CONVERSION'
-              end as &code._STATUS length=16
         %end;
         from &data_a as a
         %do i=1 %to &n;
             %let analyte=%scan(&analytes,&i);
-            %let measure=%scan(&measures,&i);
-            %let code=%substr(&measure,%eval(%length(&prefix)+1));
             left join &data_b as b&i
-                on
-                %do j=1 %to &nkeys;
-                    %let key=%scan(&keys,&j);
-                    %if &j>1 %then and;
-                    a.&key=b&i..&key
-                %end;
-                and b&i..&analyte_var="&analyte"
-            %if %length(%superq(conversion_ds)) %then %do;
-                left join &conversion_ds as c&i
-                  on upcase(strip(c&i..ANALYTE))=upcase("&analyte")
-                 and upcase(strip(c&i..FROM_UNIT))=
-                     upcase(strip(a.&unit_prefix.&code))
-                 and upcase(strip(c&i..TO_UNIT))=
-                     upcase(strip(b&i..&ref_unit_var))
-            %end;
+              on
+              %do j=1 %to &nkeys;
+                  %let key=%scan(&keys,&j);
+                  %if &j>1 %then and;
+                  a.&key=b&i..&key
+              %end;
+              and upcase(strip(b&i..&analyte_var))=upcase("&analyte")
         %end;
         ;
     quit;
+    %if &sqlrc ne 0 %then %do;
+        %put ERROR: Reference merge failed.;
+        %return;
+    %end;
+
+    data &out;
+        set &out;
+        length _cl_from _cl_to $80 _cl_analyte $32;
+        %do i=1 %to &n;
+            %let measure=%scan(&measures,&i);
+            %let analyte=%scan(&analytes,&i);
+            %let unit=%scan(&units,&i);
+            %let code=%substr(&measure,%eval(%length(&prefix)+1));
+            %convert_lab_unit_step(
+                value=&measure, analyte=&analyte, from=&unit,
+                to=&code._UNIT, result=&code._STD, status=&code._STATUS
+            );
+        %end;
+        drop _cl_:;
+    run;
 %mend merge_measure_analyte;
 
-/* Example conversion lookup table (values are illustrative; validate
-   factors, units, and analyte-specific methods against lab specifications):
-data work.lab_conversion;
-    length analyte $32 from_unit to_unit $20;
-    input analyte $ from_unit $ to_unit $ factor offset;
-    datalines;
-CREATININE mg/dL umol/L 88.4 0
-GLUCOSE mg/dL mmol/L 0.0555 0
-;
-run;
-
-%merge_measure_analyte(
-    data_a=work.lab_wide,
-    data_b=work.lab_reference,
-    out=work.lab_merged,
-    measures=LBRES_CREAT LBRES_GLU,
-    analytes=CREATININE GLUCOSE,
-    keys=SUBJECT VISIT,
-    analyte_var=LBTEST,
-    low_var=LBSTNRLO,
-    high_var=LBSTNRHI,
-    ref_unit_var=LBSTRESU,
-    conversion_ds=work.lab_conversion
-);
+/* Load convert_count_unit_macro.sas before invoking this macro.
+   Example:
+   %merge_measure_analyte(
+       data_a=work.lab_wide, data_b=work.lab_reference, out=work.lab_merged,
+       measures=LBRES_CREAT LBRES_GLU LBRES_WBC,
+       analytes=CREATININE GLUCOSE WBC,
+       units=LBUNIT_CREAT LBUNIT_GLU LBUNIT_WBC,
+       analyte_var=LBTEST, low_var=LBSTNRLO, high_var=LBSTNRHI,
+       ref_unit_var=LBSTRESU
+   );
 */
