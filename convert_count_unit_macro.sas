@@ -164,3 +164,77 @@ Example (wide-format LB_CHEM):
     results=WBC_STD RBC_STD PLT_STD
 );
 */
+
+
+/* Inline DATA-step converter. FROM= and TO= are character expressions.
+   Supports count concentrations plus selected analyte-specific chemistry.
+   Unsupported pairs never silently copy a value. */
+%macro convert_lab_unit_step(value=,analyte=,from=,to=,result=,status=);
+    length &status $20;
+    &result=.;
+    &status='NO_CONVERSION';
+    _cl_from=upcase(compress(strip(&from),' '));
+    _cl_to=upcase(compress(strip(&to),' '));
+    _cl_analyte=upcase("&analyte");
+    _cl_f=.; _cl_t=.;
+
+    if missing(&value) then &status='MISSING_VALUE';
+    else if missing(&to) then &status='NO_REFERENCE';
+    else if missing(&from) then &status='NO_SOURCE_UNIT';
+    else if _cl_from=_cl_to then do;
+        &result=&value;
+        &status='MATCH';
+    end;
+    else do;
+        /* Existing count concentration aliases, in cells/L. */
+        if _cl_from in ('/UL','CELL/UL','CELLS/UL','/MM3','/MM^3',
+            'CELL/MM3','CELLS/MM3','10^6/L','10**6/L','10E6/L','10*6/L')
+            then _cl_f=1e6;
+        else if _cl_from in ('K/UL','10^9/L','10**9/L','10E9/L','10*9/L','G/L')
+            then _cl_f=1e9;
+        else if _cl_from in ('10^11/L','10**11/L','10E11/L','10*11/L')
+            then _cl_f=1e11;
+        else if _cl_from in ('M/UL','10^12/L','10**12/L','10E12/L','10*12/L','T/L')
+            then _cl_f=1e12;
+        else if _cl_from in ('CELLS/L','CELL/L','/L') then _cl_f=1;
+
+        if _cl_to in ('/UL','CELL/UL','CELLS/UL','/MM3','/MM^3',
+            'CELL/MM3','CELLS/MM3','10^6/L','10**6/L','10E6/L','10*6/L')
+            then _cl_t=1e6;
+        else if _cl_to in ('K/UL','10^9/L','10**9/L','10E9/L','10*9/L','G/L')
+            then _cl_t=1e9;
+        else if _cl_to in ('10^11/L','10**11/L','10E11/L','10*11/L')
+            then _cl_t=1e11;
+        else if _cl_to in ('M/UL','10^12/L','10**12/L','10E12/L','10*12/L','T/L')
+            then _cl_t=1e12;
+        else if _cl_to in ('CELLS/L','CELL/L','/L') then _cl_t=1;
+
+        if _cl_analyte in ('WBC','RBC','PLT','PLATELET','PLATELETS',
+                           'NEUTROPHILS','LYMPHOCYTES','MONOCYTES',
+                           'EOSINOPHILS','BASOPHILS')
+            and not missing(_cl_f) and not missing(_cl_t) then do;
+            &result=&value*_cl_f/_cl_t;
+            &status='CONVERTED';
+        end;
+        else if _cl_analyte in ('CREATININE','CREAT')
+            and _cl_from='MG/DL' and _cl_to in ('UMOL/L','µMOL/L') then do;
+            &result=&value*88.4;
+            &status='CONVERTED';
+        end;
+        else if _cl_analyte in ('CREATININE','CREAT')
+            and _cl_from in ('UMOL/L','µMOL/L') and _cl_to='MG/DL' then do;
+            &result=&value/88.4;
+            &status='CONVERTED';
+        end;
+        else if _cl_analyte in ('GLUCOSE','GLU')
+            and _cl_from='MG/DL' and _cl_to='MMOL/L' then do;
+            &result=&value/18.0182;
+            &status='CONVERTED';
+        end;
+        else if _cl_analyte in ('GLUCOSE','GLU')
+            and _cl_from='MMOL/L' and _cl_to='MG/DL' then do;
+            &result=&value*18.0182;
+            &status='CONVERTED';
+        end;
+    end;
+%mend convert_lab_unit_step;
