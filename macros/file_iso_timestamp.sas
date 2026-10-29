@@ -32,8 +32,7 @@
     %end;
 
     data _null_;
-        length path $1024 attr attr_name $64
-               timestamp $100 iso_timestamp $32
+        length path $1024 timestamp $100 iso_timestamp $32
                tz $64 sign $1;
 
         path = symget('filepath');
@@ -52,20 +51,15 @@
             stop;
         end;
 
-        do i = 1 to foptnum(fid);
-            attr = foptname(fid, i);
-            if "&_type" = "CREATED" then do;
-                if upcase(strip(attr)) in ('CREATE TIME', 'CREATION TIME')
-                    then attr_name = attr;
-            end;
-            else if upcase(strip(attr)) = 'LAST MODIFIED' then
-                attr_name = attr;
-        end;
+        /* Attribute names should be verified on the target Windows SAS host. */
+        if "&_type" = "CREATED" then
+            timestamp = finfo(fid, 'Create Time');
+        else
+            timestamp = finfo(fid, 'Last Modified');
 
-        if missing(attr_name) then
-            putlog 'ERROR: Requested timestamp attribute not found.';
+        if missing(timestamp) then
+            putlog 'ERROR: Requested file timestamp attribute is unavailable.';
         else do;
-            timestamp = finfo(fid, strip(attr_name));
             dt = input(timestamp, ?? anydtdtm40.);
             if missing(dt) then
                 putlog 'ERROR: Cannot parse file timestamp: ' timestamp;
